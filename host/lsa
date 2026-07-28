@@ -1,0 +1,60 @@
+#!/bin/sh
+# lsa — run LoricaOS as a subsystem on this Linux host.
+#
+# Boots the Aegis kernel + a LoricaOS rootfs in a Firecracker micro-VM and
+# attaches the guest serial console to this terminal, dropping you into a
+# LoricaOS shell. The WSL model, inverted (see the repo README).
+#
+# Layout (override with env):
+#   LSA_HOME   state dir            (default: ~/.lsa)
+#     kernel.elf   the Aegis microvm kernel (PVH-bootable)
+#     rootfs.img   the LoricaOS ext2 root
+#     firecracker  the VMM binary
+#
+# Usage:
+#   lsa                 boot into an interactive LoricaOS shell
+#   lsa --mem <MiB>     override guest memory (default 512)
+#   lsa --help
+set -eu
+
+LSA_HOME="${LSA_HOME:-$HOME/.lsa}"
+FC="${LSA_FIRECRACKER:-$LSA_HOME/firecracker}"
+KERNEL="${LSA_KERNEL:-$LSA_HOME/kernel.elf}"
+ROOTFS="${LSA_ROOTFS:-$LSA_HOME/rootfs.img}"
+MEM_MIB=512
+VCPUS=1
+
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --mem)   MEM_MIB="$2"; shift 2 ;;
+        --vcpus) VCPUS="$2"; shift 2 ;;
+        -h|--help) usage 0 ;;
+        *) echo "lsa: unknown argument: $1" >&2; usage 1 ;;
+    esac
+done
+
+for f in "$FC" "$KERNEL" "$ROOTFS"; do
+    [ -e "$f" ] || { echo "lsa: missing $f — run host/setup.sh first" >&2; exit 1; }
+done
+[ -e /dev/kvm ] || { echo "lsa: /dev/kvm not present — KVM is required" >&2; exit 1; }
+
+CFG="$(mktemp)"
+SOCK="$(mktemp -u)"
+trap 'rm -f "$CFG" "$SOCK"' EXIT
+
+# boot_args: Firecracker appends its own virtio_mmio.device= entries, which the
+# kernel discovers over virtio-mmio. `boot=text` selects the serial console.
+cat > "$CFG" <<JSON
+{
+  "boot-source": { "kernel_image_path": "$KERNEL", "boot_args": "boot=text" },
+  "drives": [
+    { "drive_id": "rootfs", "path_on_host": "$ROOTFS",
+      "is_root_device": true, "is_read_only": false }
+  ],
+  "machine-config": { "vcpu_count": $VCPUS, "mem_size_mib": $MEM_MIB }
+}
+JSON
+
+exec "$FC" --no-api --api-sock "$SOCK" --config-file "$CFG"

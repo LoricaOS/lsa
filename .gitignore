@@ -1,0 +1,4 @@
+# host state / staged guest artifacts
+*.img
+*.elf
+/host/.lsa/
