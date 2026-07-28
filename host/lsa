@@ -41,8 +41,7 @@ done
 [ -e /dev/kvm ] || { echo "lsa: /dev/kvm not present — KVM is required" >&2; exit 1; }
 
 CFG="$(mktemp)"
-SOCK="$(mktemp -u)"
-trap 'rm -f "$CFG" "$SOCK"' EXIT
+trap 'rm -f "$CFG"' EXIT
 
 # boot_args: Firecracker appends its own virtio_mmio.device= entries, which the
 # kernel discovers over virtio-mmio. `boot=text` selects the serial console.
@@ -57,4 +56,4 @@ cat > "$CFG" <<JSON
 }
 JSON
 
-exec "$FC" --no-api --api-sock "$SOCK" --config-file "$CFG"
+exec "$FC" --no-api --config-file "$CFG"

@@ -48,13 +48,27 @@ config/   Firecracker machine templates
 
 ## Status
 
-Early. Host #1 is **nebula** (a Gentoo workstation, KVM + AMD-V). See `host/`.
+**Working.** Host #1 is **nebula** (a Gentoo workstation, KVM + AMD-V): `lsa`
+boots LoricaOS in real Firecracker to an interactive shell — you type, and
+`vigil` → `stsh` → coreutils respond over the console:
+
+```
+aegis@loricaos:/$ uname
+Aegis
+aegis@loricaos:/$ ls /bin
+cut  expand  ls  realpath  stsh  uname  …
+```
+
+Getting there took a small round of Aegis hardening for a truly bare VMM
+(Firecracker emulates no VGA, no working 8042, no PIT, and rejects unmapped
+I/O): a serial-only-console VGA probe, an 8042 fast-bail, serial-RX polling
+(no legacy IRQs), and a one-page virtio-blk transfer cap. All landed upstream.
 
 ## Roadmap
 
-- [ ] `lsa` — boot LoricaOS to an interactive shell (v1)
+- [x] `lsa` — boot LoricaOS to an interactive shell (v1)
 - [ ] `lsa run <cmd>` — one-shot command execution
 - [ ] shared filesystem with the host (virtio-9p, WSL-style `/mnt`)
-- [ ] fast, snappy boot (fix micro-VM timer calibration; Firecracker has no PIT)
 - [ ] networking passthrough
 - [ ] `lsa` lifecycle: persistent VM, `stop`/`status`
+- [ ] a `guest/build.sh` that produces `kernel.elf` + `rootfs.img` end-to-end
