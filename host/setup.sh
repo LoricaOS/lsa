@@ -1,17 +1,13 @@
 #!/bin/sh
-# setup.sh — provision an LSA host.
+# setup.sh — provision an LSA host: install Firecracker, then the default distro.
 #
-# Installs Firecracker and stages the LoricaOS guest (kernel + rootfs) into
-# LSA_HOME (~/.lsa by default), so `lsa` can boot it. Idempotent.
-#
-# The guest artifacts (kernel.elf, rootfs.img) are produced by the LoricaOS
-# build (the `microvm` kernel tier + a server rootfs); point at them with
-# LSA_KERNEL_SRC / LSA_ROOTFS_SRC, or drop them into $LSA_HOME yourself.
+# After this, `lsa` boots you into LoricaOS. Idempotent.
 set -eu
 
 LSA_HOME="${LSA_HOME:-$HOME/.lsa}"
 FC_VERSION="${FC_VERSION:-v1.16.1}"
 ARCH="$(uname -m)"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "$LSA_HOME"
 
@@ -27,23 +23,14 @@ if [ ! -x "$LSA_HOME/firecracker" ]; then
 fi
 "$LSA_HOME/firecracker" --version | head -1
 
-# ── Guest kernel + rootfs ────────────────────────────────────────────────────
-for pair in "kernel.elf:${LSA_KERNEL_SRC:-}" "rootfs.img:${LSA_ROOTFS_SRC:-}"; do
-    dst="$LSA_HOME/${pair%%:*}"; src="${pair#*:}"
-    if [ -n "$src" ]; then
-        echo "[setup] staging $dst from $src"
-        cp "$src" "$dst"
-    elif [ ! -e "$dst" ]; then
-        echo "[setup] NOTE: $dst missing — build it from LoricaOS (microvm kernel"
-        echo "        tier + a server rootfs) and set LSA_KERNEL_SRC / LSA_ROOTFS_SRC,"
-        echo "        or copy it into $LSA_HOME."
-    fi
-done
-
 # ── KVM access ───────────────────────────────────────────────────────────────
 if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
     echo "[setup] WARNING: /dev/kvm not read/writable by you — add yourself to the"
     echo "        'kvm' group (usermod -aG kvm \$USER) and re-log."
 fi
 
-echo "[setup] done. Run: $(dirname "$0")/lsa"
+# ── Default distribution ─────────────────────────────────────────────────────
+echo "[setup] installing the default distribution (loricaos)"
+"$HERE/lsa" install loricaos
+
+echo "[setup] done. Run: $HERE/lsa"

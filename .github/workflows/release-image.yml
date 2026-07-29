@@ -1,0 +1,52 @@
+name: build loricaos image
+
+# Builds the "loricaos" LSA distribution artifact — kernel.elf + rootfs.img +
+# distro.conf, packed as loricaos-x86_64.tar.gz — and attaches it to a GitHub
+# release, so `lsa install loricaos` downloads and boots it. The default distro
+# lands at the rolling `loricaos-latest` release.
+#
+# No cross-toolchain needed: the freestanding Aegis kernel builds with the
+# runner's stock gnu toolchain, and the userland uses LoricaOS's baseline musl.
+on:
+  push:
+    tags: ['loricaos-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish the image to'
+        required: true
+        default: loricaos-latest
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { repository: LoricaOS/Aegis,     path: aegis }
+      - uses: actions/checkout@v4
+        with: { repository: LoricaOS/LoricaOS,  path: loricaos }
+      - uses: actions/checkout@v4
+        with: { repository: LoricaOS/coreutils, path: coreutils }
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential nasm e2fsprogs
+
+      - name: Build baseline musl (LoricaOS toolchain)
+        run: cd loricaos && bash tools/build-musl.sh
+
+      - name: Build the loricaos image
+        run: |
+          KCC=gcc KLD=ld KOBJCOPY=objcopy KNM=nm \
+          AEGIS="$PWD/aegis" LORICA="$PWD/loricaos" CORE="$PWD/coreutils" \
+          OUT="$PWD/loricaos-x86_64.tar.gz" \
+            bash guest/build-image.sh
+
+      - name: Publish to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: loricaos-x86_64.tar.gz

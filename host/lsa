@@ -1,59 +1,120 @@
 #!/bin/sh
-# lsa — run LoricaOS as a subsystem on this Linux host.
+# lsa — Linux Subsystem for Aegis. Run LoricaOS (and, one day, other Aegis
+# distributions) as a lightweight Firecracker micro-VM on this Linux host.
 #
-# Boots the Aegis kernel + a LoricaOS rootfs in a Firecracker micro-VM and
-# attaches the guest serial console to this terminal, dropping you into a
-# LoricaOS shell. The WSL model, inverted (see the repo README).
+# The WSL model, inverted and session-first:
+#   lsa                         open a shell in the default distribution
+#   lsa <cmd> [args...]         run one command in the default distribution
+#   lsa -d <distro> [cmd...]    target a specific distribution
+#   lsa install [<distro>]      download + register a distribution (default: loricaos)
+#   lsa list | -l               list installed distributions ('*' = default)
+#   lsa set-default <distro>    make <distro> the default
+#   lsa unregister <distro>     remove a distribution
+#   lsa help
 #
-# Layout (override with env):
-#   LSA_HOME   state dir            (default: ~/.lsa)
-#     kernel.elf   the Aegis microvm kernel (PVH-bootable)
-#     rootfs.img   the LoricaOS ext2 root
-#     firecracker  the VMM binary
-#
-# Usage:
-#   lsa                 boot into an interactive LoricaOS shell
-#   lsa --mem <MiB>     override guest memory (default 512)
-#   lsa --help
+# State (override with $LSA_HOME, default ~/.lsa):
+#   firecracker                 the VMM binary
+#   default                     name of the default distribution
+#   distros/<name>/             kernel.elf, rootfs.img, distro.conf
 set -eu
 
 LSA_HOME="${LSA_HOME:-$HOME/.lsa}"
 FC="${LSA_FIRECRACKER:-$LSA_HOME/firecracker}"
-KERNEL="${LSA_KERNEL:-$LSA_HOME/kernel.elf}"
-ROOTFS="${LSA_ROOTFS:-$LSA_HOME/rootfs.img}"
-MEM_MIB=512
-VCPUS=1
+DISTROS="$LSA_HOME/distros"
 
+die()  { echo "lsa: $*" >&2; exit 1; }
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
-while [ $# -gt 0 ]; do
+# ── distribution registry: name -> release artifact URL ──────────────────────
+# A distribution is a .tar.gz of { kernel.elf, rootfs.img, distro.conf }.
+registry_url() {
     case "$1" in
-        --mem)   MEM_MIB="$2"; shift 2 ;;
-        --vcpus) VCPUS="$2"; shift 2 ;;
-        -h|--help) usage 0 ;;
-        *) echo "lsa: unknown argument: $1" >&2; usage 1 ;;
+        loricaos) echo "https://github.com/LoricaOS/lsa/releases/download/loricaos-latest/loricaos-x86_64.tar.gz" ;;
+        *)        return 1 ;;
     esac
-done
+}
 
-for f in "$FC" "$KERNEL" "$ROOTFS"; do
-    [ -e "$f" ] || { echo "lsa: missing $f — run host/setup.sh first" >&2; exit 1; }
-done
-[ -e /dev/kvm ] || { echo "lsa: /dev/kvm not present — KVM is required" >&2; exit 1; }
+default_distro() {
+    [ -f "$LSA_HOME/default" ] && cat "$LSA_HOME/default" || echo loricaos
+}
 
-CFG="$(mktemp)"
-trap 'rm -f "$CFG"' EXIT
+distro_dir() { echo "$DISTROS/$1"; }
 
-# boot_args: Firecracker appends its own virtio_mmio.device= entries, which the
-# kernel discovers over virtio-mmio. `boot=text` selects the serial console.
-cat > "$CFG" <<JSON
+require_distro() {
+    [ -d "$(distro_dir "$1")" ] || die "distribution '$1' is not installed — try: lsa install $1"
+}
+
+# ── commands ─────────────────────────────────────────────────────────────────
+cmd_install() {
+    name="${1:-loricaos}"
+    url="$(registry_url "$name")" || die "unknown distribution '$name'"
+    dir="$(distro_dir "$name")"
+    mkdir -p "$dir"
+    echo "[lsa] installing '$name' from $url"
+    tmp="$(mktemp)"; trap 'rm -f "$tmp"' EXIT
+    curl -fSL "$url" -o "$tmp" || die "download failed"
+    tar -xzf "$tmp" -C "$dir" || die "extract failed"
+    [ -f "$dir/kernel.elf" ] && [ -f "$dir/rootfs.img" ] || die "artifact missing kernel.elf/rootfs.img"
+    [ -f "$LSA_HOME/default" ] || echo "$name" > "$LSA_HOME/default"   # first install = default
+    echo "[lsa] '$name' installed$( [ "$(default_distro)" = "$name" ] && echo ' (default)')"
+}
+
+cmd_list() {
+    def="$(default_distro)"
+    [ -d "$DISTROS" ] || { echo "(no distributions — run: lsa install)"; return; }
+    found=0
+    for d in "$DISTROS"/*/; do
+        [ -d "$d" ] || continue; found=1
+        n="$(basename "$d")"
+        v="$([ -f "$d/distro.conf" ] && . "$d/distro.conf" 2>/dev/null; echo "${version:-?}")"
+        printf '%s %-16s %s\n' "$( [ "$n" = "$def" ] && echo '*' || echo ' ' )" "$n" "$v"
+    done
+    [ "$found" = 1 ] || echo "(no distributions — run: lsa install)"
+}
+
+cmd_set_default() { require_distro "$1"; echo "$1" > "$LSA_HOME/default"; echo "[lsa] default = $1"; }
+cmd_unregister()  { require_distro "$1"; rm -rf "$(distro_dir "$1")"; echo "[lsa] removed $1"; }
+
+# Boot a distribution. With no CMD -> interactive shell. With CMD -> run it and
+# exit (the guest's lsa init reads lsa.exec= from the kernel cmdline).
+cmd_boot() {
+    distro="$1"; shift
+    require_distro "$distro"
+    [ -x "$FC" ] || die "firecracker not found at $FC — run setup.sh"
+    [ -r /dev/kvm ] && [ -w /dev/kvm ] || die "/dev/kvm not accessible (add yourself to the 'kvm' group)"
+    dir="$(distro_dir "$distro")"
+
+    version=""; mem_mib=512; vcpus=1; boot_args="boot=text"
+    [ -f "$dir/distro.conf" ] && . "$dir/distro.conf"
+
+    if [ $# -gt 0 ]; then
+        # command mode: base64 the command onto the cmdline for the guest to run
+        enc="$(printf '%s' "$*" | base64 | tr -d '\n')"
+        boot_args="$boot_args lsa.exec=$enc"
+    fi
+
+    cfg="$(mktemp)"; trap 'rm -f "$cfg"' EXIT
+    cat > "$cfg" <<JSON
 {
-  "boot-source": { "kernel_image_path": "$KERNEL", "boot_args": "boot=text" },
-  "drives": [
-    { "drive_id": "rootfs", "path_on_host": "$ROOTFS",
-      "is_root_device": true, "is_read_only": false }
-  ],
-  "machine-config": { "vcpu_count": $VCPUS, "mem_size_mib": $MEM_MIB }
+  "boot-source": { "kernel_image_path": "$dir/kernel.elf", "boot_args": "$boot_args" },
+  "drives": [ { "drive_id": "rootfs", "path_on_host": "$dir/rootfs.img",
+                "is_root_device": true, "is_read_only": false } ],
+  "machine-config": { "vcpu_count": $vcpus, "mem_size_mib": $mem_mib }
 }
 JSON
+    exec "$FC" --no-api --config-file "$cfg"
+}
 
-exec "$FC" --no-api --config-file "$CFG"
+# ── argument dispatch (WSL-like) ─────────────────────────────────────────────
+DISTRO="$(default_distro)"
+case "${1:-}" in
+    ""|shell)        [ "${1:-}" = shell ] && shift; cmd_boot "$DISTRO" ;;
+    install)         shift; cmd_install "$@" ;;
+    list|-l|--list)  cmd_list ;;
+    set-default|-s|--set-default) shift; [ $# -ge 1 ] || usage 1; cmd_set_default "$1" ;;
+    unregister)      shift; [ $# -ge 1 ] || usage 1; cmd_unregister "$1" ;;
+    help|-h|--help)  usage 0 ;;
+    -d|--distro)     shift; [ $# -ge 1 ] || usage 1; DISTRO="$1"; shift; cmd_boot "$DISTRO" "$@" ;;
+    -*)              die "unknown option: $1  (lsa help)" ;;
+    *)               cmd_boot "$DISTRO" "$@" ;;    # `lsa <cmd> ...`
+esac
