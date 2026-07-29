@@ -10,6 +10,7 @@
 #   lsa list | -l               list installed distributions ('*' = default)
 #   lsa set-default <distro>    make <distro> the default
 #   lsa unregister <distro>     remove a distribution
+#   lsa cp <src> <dst>          copy a file in/out (one side is <distro>:/path)
 #   lsa stop                    terminate any running micro-VM
 #   lsa version | help
 #
@@ -90,6 +91,30 @@ cmd_stop() {
     else echo "[lsa] no micro-VM running"; fi
 }
 
+# File interop (WSL's \\wsl$\ equivalent). Firecracker has no 9p/virtiofs, but
+# the rootfs is a plain ext2 image that persists across boots, so debugfs moves
+# files in/out while the VM is stopped. One argument carries a <distro>:/path
+# prefix (empty distro = default); the parent dir of the destination must exist.
+cp_guard() { if pgrep -f "$(distro_dir "$1")/rootfs.img" >/dev/null 2>&1; then die "'$1' is running — 'lsa stop' first"; fi; }
+
+cmd_cp() {
+    [ $# -eq 2 ] || die "usage: lsa cp <src> <dst>  (one side is <distro>:/path)"
+    src="$1"; dst="$2"
+    case "$src" in
+        *:*)  d="${src%%:*}"; p="${src#*:}"; d="${d:-$(default_distro)}"    # copy OUT
+              require_distro "$d"; cp_guard "$d"
+              debugfs -R "dump $p $dst" "$(distro_dir "$d")/rootfs.img" 2>/dev/null \
+                  && [ -f "$dst" ] || die "copy-out failed: $src" ;;
+        *)    case "$dst" in *:*) ;; *) die "one path must be <distro>:/path" ;; esac
+              d="${dst%%:*}"; p="${dst#*:}"; d="${d:-$(default_distro)}"    # copy IN
+              require_distro "$d"; cp_guard "$d"
+              [ -f "$src" ] || die "no such file: $src"
+              printf 'rm %s\nwrite %s %s\n' "$p" "$src" "$p" \
+                  | debugfs -w -f /dev/stdin "$(distro_dir "$d")/rootfs.img" >/dev/null 2>&1 || die "copy-in failed" ;;
+    esac
+    echo "[lsa] copied"
+}
+
 # Boot a distribution. With no CMD -> interactive shell. With CMD -> run it and
 # exit (the guest's lsa init reads lsa.exec= from the kernel cmdline).
 cmd_boot() {
@@ -147,6 +172,7 @@ case "${1:-}" in
     list|-l|--list)  cmd_list ;;
     set-default|-s|--set-default) shift; [ $# -ge 1 ] || usage 1; cmd_set_default "$1" ;;
     unregister)      shift; [ $# -ge 1 ] || usage 1; cmd_unregister "$1" ;;
+    cp)              shift; cmd_cp "$@" ;;
     version|--version) cmd_version ;;
     stop|--stop|--shutdown) cmd_stop ;;
     help|-h|--help)  usage 0 ;;

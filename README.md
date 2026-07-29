@@ -64,11 +64,49 @@ Getting there took a small round of Aegis hardening for a truly bare VMM
 I/O): a serial-only-console VGA probe, an 8042 fast-bail, serial-RX polling
 (no legacy IRQs), and a one-page virtio-blk transfer cap. All landed upstream.
 
+## Commands
+
+```
+lsa                        open a shell in the default distribution
+lsa <cmd> [args...]        run one command, stream its output, propagate exit code
+lsa -d <distro> [cmd...]   target a specific distribution
+lsa install [<distro>]     download + register a distribution (default: loricaos)
+lsa list | -l              list installed distributions ('*' = default)
+lsa set-default <distro>   make <distro> the default
+lsa cp <src> <dst>         copy a file in/out (one side is <distro>:/path)
+lsa unregister <distro>    remove a distribution
+lsa stop                   terminate any running micro-VM
+lsa version | help
+```
+
+Each invocation boots a fresh micro-VM (~0.3 s) and tears it down on exit — no
+daemon, no persistent VM to manage. Distributions are `.tar.gz` bundles of
+`{ kernel.elf, rootfs.img, distro.conf }`; the CI [release workflow](.github/workflows/release-image.yml)
+builds and publishes the `loricaos` image that `lsa install` fetches.
+
+### File interop
+
+`lsa cp` moves files through the distro's ext2 rootfs image with `debugfs` (no
+9p/virtiofs needed — Firecracker has neither):
+
+```
+lsa cp ./setup.sh loricaos:/etc/setup.sh     # stage a file into the distro
+lsa cp loricaos:/etc/motd ./motd             # pull a file out
+```
+
+Copy-*in* and copy-*out of files already in the image work today. Extracting a
+file the **guest itself just created** does not yet round-trip: the reboot-to-exit
+path commits data blocks but not the new inode's on-disk size/mtime (an Aegis
+ext2-writer durability gap, tracked separately).
+
 ## Roadmap
 
-- [x] `lsa` — boot LoricaOS to an interactive shell (v1)
-- [ ] `lsa run <cmd>` — one-shot command execution
-- [ ] shared filesystem with the host (virtio-9p, WSL-style `/mnt`)
-- [ ] networking passthrough
-- [ ] `lsa` lifecycle: persistent VM, `stop`/`status`
-- [ ] a `guest/build.sh` that produces `kernel.elf` + `rootfs.img` end-to-end
+- [x] `lsa` — boot LoricaOS to an interactive shell
+- [x] `lsa <cmd>` — one-shot command execution (clean output + exit code)
+- [x] fast boot (~0.3 s kernel init)
+- [x] distribution registry + CI-published `loricaos` release artifact
+- [x] lifecycle: fresh VM per call, `stop`, `version`
+- [x] `lsa cp` file interop (copy-in; copy-out of existing files)
+- [ ] durable guest writes across reboot-to-exit (ext2-writer fix) — unblocks copy-out of guest-created files
+- [ ] networking passthrough (virtio-net + host TAP/NAT; needs host root)
+- [ ] live shared filesystem, WSL-style `/mnt` (needs a QEMU `microvm` backend — Firecracker has no 9p/virtiofs)
