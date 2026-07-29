@@ -10,7 +10,8 @@
 #   lsa list | -l               list installed distributions ('*' = default)
 #   lsa set-default <distro>    make <distro> the default
 #   lsa unregister <distro>     remove a distribution
-#   lsa help
+#   lsa stop                    terminate any running micro-VM
+#   lsa version | help
 #
 # State (override with $LSA_HOME, default ~/.lsa):
 #   firecracker                 the VMM binary
@@ -18,6 +19,7 @@
 #   distros/<name>/             kernel.elf, rootfs.img, distro.conf
 set -eu
 
+LSA_VERSION=0.1.0
 LSA_HOME="${LSA_HOME:-$HOME/.lsa}"
 FC="${LSA_FIRECRACKER:-$LSA_HOME/firecracker}"
 DISTROS="$LSA_HOME/distros"
@@ -74,6 +76,19 @@ cmd_list() {
 
 cmd_set_default() { require_distro "$1"; echo "$1" > "$LSA_HOME/default"; echo "[lsa] default = $1"; }
 cmd_unregister()  { require_distro "$1"; rm -rf "$(distro_dir "$1")"; echo "[lsa] removed $1"; }
+
+cmd_version() {
+    echo "lsa (Linux Subsystem for Aegis) $LSA_VERSION"
+    [ -x "$FC" ] && echo "  vmm:     $("$FC" --version 2>/dev/null | head -1)"
+    echo "  default: $(default_distro)"
+}
+
+# No persistent VM: each `lsa` boots a fresh micro-VM (~0.3s). `stop` just
+# terminates any VM still running (a hung command, or a shell you disconnected).
+cmd_stop() {
+    if pkill -f "$FC" 2>/dev/null; then echo "[lsa] stopped running micro-VM(s)"
+    else echo "[lsa] no micro-VM running"; fi
+}
 
 # Boot a distribution. With no CMD -> interactive shell. With CMD -> run it and
 # exit (the guest's lsa init reads lsa.exec= from the kernel cmdline).
@@ -132,6 +147,8 @@ case "${1:-}" in
     list|-l|--list)  cmd_list ;;
     set-default|-s|--set-default) shift; [ $# -ge 1 ] || usage 1; cmd_set_default "$1" ;;
     unregister)      shift; [ $# -ge 1 ] || usage 1; cmd_unregister "$1" ;;
+    version|--version) cmd_version ;;
+    stop|--stop|--shutdown) cmd_stop ;;
     help|-h|--help)  usage 0 ;;
     -d|--distro)     shift; [ $# -ge 1 ] || usage 1; DISTRO="$1"; shift; cmd_boot "$DISTRO" "$@" ;;
     -*)              die "unknown option: $1  (lsa help)" ;;
