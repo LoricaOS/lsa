@@ -13,6 +13,7 @@
 # (tools/build-musl.sh — pins -march=x86-64), mke2fs + debugfs.
 set -euo pipefail
 export PATH="$PATH:/sbin:/usr/sbin"    # mke2fs/debugfs live here on most distros
+HERE="$(cd "$(dirname "$0")" && pwd)"
 
 # Kernel toolchain: bare cross by default; a CI runner overrides to its stock
 # gnu toolchain (the freestanding kernel builds fine with either).
@@ -29,8 +30,17 @@ MG="$LORICA/build/musl-dynamic/usr/bin/musl-gcc"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 STAGE="$WORK/stage"; mkdir -p "$STAGE"
 
+# aegis drives its config with `kconf` (a separate repo, LoricaOS/kconfig). Build
+# the vendored copy so the build is self-contained (no private-repo checkout).
+KCONF="${KCONF:-$WORK/kconf}"
+[ -x "$KCONF" ] || cc -O2 -o "$WORK/kconf" "$HERE/vendor/kconf.c"
+
 echo "[img] kernel: aegis microvm tier"
-( cd "$AEGIS" && make microvm_defconfig >/dev/null && make -j"$(nproc)" CC="$KCC" LD="$KLD" OBJCOPY="$KOBJCOPY" NM="$KNM" >/dev/null )
+# Pass the toolchain to BOTH invocations — the Makefile resolves the gcc include
+# path at parse time, so even `microvm_defconfig` fails if CC points at an
+# absent cross-gcc.
+KT="CC=$KCC LD=$KLD OBJCOPY=$KOBJCOPY NM=$KNM KCONF=$KCONF"
+( cd "$AEGIS" && make $KT microvm_defconfig >/dev/null && make -j"$(nproc)" $KT >/dev/null )
 cp "$AEGIS/build/aegis.elf" "$STAGE/kernel.elf"
 
 echo "[img] userland: vigil + stsh + coreutils (baseline musl)"
