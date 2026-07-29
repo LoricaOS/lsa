@@ -87,8 +87,10 @@ cmd_boot() {
     version=""; mem_mib=512; vcpus=1; boot_args="boot=text"
     [ -f "$dir/distro.conf" ] && . "$dir/distro.conf"
 
+    run=0
     if [ $# -gt 0 ]; then
         # command mode: base64 the command onto the cmdline for the guest to run
+        run=1
         enc="$(printf '%s' "$*" | base64 | tr -d '\n')"
         boot_args="$boot_args lsa.exec=$enc"
     fi
@@ -102,7 +104,24 @@ cmd_boot() {
   "machine-config": { "vcpu_count": $vcpus, "mem_size_mib": $mem_mib }
 }
 JSON
-    exec "$FC" --no-api --config-file "$cfg"
+
+    if [ "$run" = 0 ]; then
+        exec "$FC" --no-api --config-file "$cfg"          # interactive shell
+    fi
+
+    # run mode: print only the command's output (between the guest markers) and
+    # propagate its exit code. The guest reboots after the command, so the VM
+    # stops on its own — keep draining after __LSA_END__ (do NOT close the pipe
+    # early, or the guest gets SIGPIPE mid-reboot and never exits). A timeout
+    # guards against a command that never returns.
+    rcf="$(mktemp)"
+    timeout "${LSA_RUN_TIMEOUT:-120}" "$FC" --no-api --config-file "$cfg" 2>/dev/null | awk -v rcf="$rcf" '
+        /__LSA_END__/    { print $2 > rcf; close(rcf); done=1; next }
+        done             { next }
+        started          { print }
+        /__LSA_BEGIN__/  { started=1 }'
+    rc="$(cat "$rcf" 2>/dev/null)"; rm -f "$rcf" "$cfg"
+    exit "${rc:-1}"
 }
 
 # ── argument dispatch (WSL-like) ─────────────────────────────────────────────

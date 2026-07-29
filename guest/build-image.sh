@@ -52,27 +52,10 @@ echo "[img] userland: vigil + stsh + coreutils (baseline musl)"
 cp "$CORE/mux/cu" "$WORK/cu"
 APPLETS="$(cat "$CORE/mux/applets")"
 
-# lsa-exit: reboot(cmd=1) -> Firecracker exits. Lets `lsa <cmd>` return.
-cat > "$WORK/lsa-exit.c" <<'C'
-#include <unistd.h>
-int main(void){ syscall(169, 1, 0, 0); return 0; }   /* SYS_reboot, kbd reset */
-C
-"$MG" -static -O2 -o "$WORK/lsa-exit" "$WORK/lsa-exit.c"
-
-# lsa-entry: the console service. Run a one-off command (lsa <cmd>, via the
-# lsa.exec= cmdline token) then exit; otherwise open an interactive shell.
-cat > "$WORK/lsa-entry" <<'SH'
-#!/bin/sh
-enc=$(sed -n 's/.*lsa\.exec=\([^ ]*\).*/\1/p' /proc/cmdline)
-if [ -n "$enc" ]; then
-    printf '%s' "$enc" | /bin/base64 -d > /run/lsa.cmd
-    /bin/sh /run/lsa.cmd; rc=$?
-    /bin/sync
-    /bin/lsa-exit    # reboot -> Firecracker exits; if denied, fall through
-    exit $rc
-fi
-exec /bin/stsh
-SH
+# lsa-entry: the console service — compiled so vigil execs it directly (no #!
+# shebang support needed). Runs `lsa <cmd>` (the lsa.exec= cmdline token) between
+# output markers then reboots to exit; otherwise opens an interactive shell.
+"$MG" -static -O2 -o "$WORK/lsa-entry" "$HERE/lsa-entry.c"
 
 echo "[img] rootfs.img (ext2)"
 IMG="$WORK/rootfs.img"
@@ -80,13 +63,16 @@ dd if=/dev/zero of="$IMG" bs=1M count=64 status=none
 mke2fs -t ext2 -F -b 4096 -L loricaos "$IMG" >/dev/null 2>&1
 printf '/bin/lsa-entry' > "$WORK/svc-run"
 printf 'respawn'        > "$WORK/svc-policy"
+printf 'service POWER'  > "$WORK/lsa-entry.caps"   # reboot-to-exit for `lsa <cmd>`
 printf 'Welcome to LoricaOS %s (LSA)\n' "$VERSION" > "$WORK/motd"
 {
   echo "mkdir /bin"
-  for f in vigil stsh cu lsa-exit; do echo "write $WORK/$f /bin/$f"; echo "set_inode_field /bin/$f mode 0100755"; done
-  echo "write $WORK/lsa-entry /bin/lsa-entry"; echo "set_inode_field /bin/lsa-entry mode 0100755"
+  for f in vigil stsh cu lsa-entry; do echo "write $WORK/$f /bin/$f"; echo "set_inode_field /bin/$f mode 0100755"; done
+  echo "ln /bin/stsh /bin/sh"                       # /bin/sh -> the shell
   for a in $APPLETS "["; do echo "ln /bin/cu /bin/$a"; done
   echo "mkdir /etc"; echo "write $WORK/motd /etc/motd"
+  echo "mkdir /etc/aegis"; echo "mkdir /etc/aegis/caps.d"
+  echo "write $WORK/lsa-entry.caps /etc/aegis/caps.d/lsa-entry"
   echo "mkdir /etc/vigil"; echo "mkdir /etc/vigil/services"; echo "mkdir /etc/vigil/services/console"
   echo "write $WORK/svc-run /etc/vigil/services/console/run"
   echo "write $WORK/svc-policy /etc/vigil/services/console/policy"
