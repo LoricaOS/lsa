@@ -117,6 +117,18 @@ cmd_cp() {
     echo "[lsa] copied"
 }
 
+# shquote — single-quote each argument so word boundaries survive being joined
+# into one shell command string for the guest. Without this, `lsa sh -c "echo x
+# > f"` flattens to `sh -c echo x > f` and the guest runs `sh -c echo` (no args).
+shquote() {
+    _out=""
+    for _a in "$@"; do
+        _e=$(printf '%s' "$_a" | sed "s/'/'\\\\''/g")   # escape ' as '\''
+        _out="$_out '$_e'"
+    done
+    printf '%s' "${_out# }"
+}
+
 # Boot a distribution. With no CMD -> interactive shell. With CMD -> run it and
 # exit (the guest's lsa init reads lsa.exec= from the kernel cmdline).
 cmd_boot() {
@@ -135,9 +147,13 @@ cmd_boot() {
 
     run=0
     if [ $# -gt 0 ]; then
-        # command mode: base64 the command onto the cmdline for the guest to run
+        # command mode: base64 the command onto the cmdline for the guest to run.
+        # One arg = a shell command string as-is (so `lsa 'ls | wc'` pipes work);
+        # multiple args = a command + argv, shell-quoted so boundaries survive
+        # (so `lsa sh -c "echo x > f"` and `lsa echo a b` are passed intact).
         run=1
-        enc="$(printf '%s' "$*" | base64 | tr -d '\n')"
+        if [ $# -eq 1 ]; then cmdstr="$1"; else cmdstr="$(shquote "$@")"; fi
+        enc="$(printf '%s' "$cmdstr" | base64 | tr -d '\n')"
         boot_args="$boot_args lsa.exec=$enc"
     fi
 

@@ -94,10 +94,8 @@ lsa cp ./setup.sh loricaos:/etc/setup.sh     # stage a file into the distro
 lsa cp loricaos:/etc/motd ./motd             # pull a file out
 ```
 
-Copy-*in* and copy-*out of files already in the image work today. Extracting a
-file the **guest itself just created** does not yet round-trip: the reboot-to-exit
-path commits data blocks but not the new inode's on-disk size/mtime (an Aegis
-ext2-writer durability gap, tracked separately).
+Copy-*in* and copy-*out* both work, including files the guest just created:
+`lsa sh -c "echo hi > /etc/note"` then `lsa cp loricaos:/etc/note ./note`.
 
 ### Networking (rootless — no root, no sudo, no host changes)
 
@@ -144,5 +142,5 @@ takes a static address from an `ip=` kernel-cmdline token. All upstream.
 - [x] `lsa cp` file interop (copy-in; copy-out of existing files)
 - [x] rootless networking — guest internet via a user-namespace + slirp4netns, no root
 - [x] guest DNS — musl `getaddrinfo` via slirp's resolver; `lsa httpget <host>` fetches by name
-- [ ] durable guest writes across reboot-to-exit (ext2-writer fix) — unblocks copy-out of guest-created files
+- [x] correct argument passing — `lsa sh -c "…"` / multi-arg commands preserve quoting
 - [ ] live shared filesystem, WSL-style `/mnt` (needs a QEMU `microvm` backend — Firecracker has no 9p/virtiofs)
