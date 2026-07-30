@@ -34,7 +34,7 @@ unshare --user --map-root-user --net bash -c '
   ip link set tap0 master br0
   ip link set tap0 up
   exec "'"$FC"'" --no-api --config-file "'"$CFG"'"
-' &
+' <&0 &
 child=$!
 
 read -r _ < "$up"                          # wait for the netns to exist
