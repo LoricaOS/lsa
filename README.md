@@ -105,11 +105,20 @@ The guest gets internet with **zero privilege**. There is no TAP on the host, no
 NAT rule, no firewall change, nothing to clean up:
 
 ```
-$ lsa nettest
+$ lsa nettest                       # connectivity self-test (by IP)
 [NETTEST] connecting to 1.1.1.1:80 ... CONNECTED
 HTTP/1.1 301 Moved Permanently
 Server: cloudflare
+
+$ lsa httpget example.com            # DNS + fetch by hostname
+httpget: example.com -> 104.18.27.120
+HTTP/1.1 200 OK
+Server: cloudflare
 ```
+
+Hostnames resolve too: slirp answers DNS at `10.0.2.3`, the image ships an
+`/etc/resolv.conf` pointing there, and musl's `getaddrinfo()` does the rest — so
+the whole userland resolves names with no extra resolver.
 
 How: each `lsa` launch runs Firecracker inside a private **user + network
 namespace**. A bridge in that namespace joins Firecracker's tap to a
@@ -134,6 +143,6 @@ takes a static address from an `ip=` kernel-cmdline token. All upstream.
 - [x] lifecycle: fresh VM per call, `stop`, `version`
 - [x] `lsa cp` file interop (copy-in; copy-out of existing files)
 - [x] rootless networking — guest internet via a user-namespace + slirp4netns, no root
-- [ ] guest DNS resolver (nettest/curl by IP work today; hostnames need a resolver in the rootfs)
+- [x] guest DNS — musl `getaddrinfo` via slirp's resolver; `lsa httpget <host>` fetches by name
 - [ ] durable guest writes across reboot-to-exit (ext2-writer fix) — unblocks copy-out of guest-created files
 - [ ] live shared filesystem, WSL-style `/mnt` (needs a QEMU `microvm` backend — Firecracker has no 9p/virtiofs)

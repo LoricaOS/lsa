@@ -61,6 +61,10 @@ APPLETS="$(cat "$CORE/mux/applets")"
 # so `lsa nettest` proves the rootless uplink works out of the box.
 "$MG" -static -O2 -o "$WORK/nettest" "$LORICA/user/bin/nettest"/*.c
 
+# httpget: name-aware fetch — musl getaddrinfo() resolves via /etc/resolv.conf
+# (slirp's 10.0.2.3), then HTTP GET. `lsa httpget example.com` proves DNS + TCP.
+"$MG" -static -O2 -o "$WORK/httpget" "$HERE/httpget.c"
+
 echo "[img] rootfs.img (ext2)"
 IMG="$WORK/rootfs.img"
 dd if=/dev/zero of="$IMG" bs=1M count=64 status=none
@@ -69,16 +73,20 @@ printf '/bin/lsa-entry' > "$WORK/svc-run"
 printf 'respawn'        > "$WORK/svc-policy"
 printf 'service POWER'  > "$WORK/lsa-entry.caps"   # reboot-to-exit for `lsa <cmd>`
 printf 'service NET_SOCKET NET_ADMIN' > "$WORK/nettest.caps"   # net self-test
+printf 'service NET_SOCKET NET_ADMIN' > "$WORK/httpget.caps"   # DNS + fetch
+printf 'nameserver 10.0.2.3\n'        > "$WORK/resolv.conf"    # slirp's DNS
 printf 'Welcome to LoricaOS %s (LSA)\n' "$VERSION" > "$WORK/motd"
 {
   echo "mkdir /bin"
-  for f in vigil stsh cu lsa-entry nettest; do echo "write $WORK/$f /bin/$f"; echo "set_inode_field /bin/$f mode 0100755"; done
+  for f in vigil stsh cu lsa-entry nettest httpget; do echo "write $WORK/$f /bin/$f"; echo "set_inode_field /bin/$f mode 0100755"; done
   echo "ln /bin/stsh /bin/sh"                       # /bin/sh -> the shell
   for a in $APPLETS "["; do echo "ln /bin/cu /bin/$a"; done
   echo "mkdir /etc"; echo "write $WORK/motd /etc/motd"
+  echo "write $WORK/resolv.conf /etc/resolv.conf"   # DNS via slirp (10.0.2.3)
   echo "mkdir /etc/aegis"; echo "mkdir /etc/aegis/caps.d"
   echo "write $WORK/lsa-entry.caps /etc/aegis/caps.d/lsa-entry"
   echo "write $WORK/nettest.caps /etc/aegis/caps.d/nettest"
+  echo "write $WORK/httpget.caps /etc/aegis/caps.d/httpget"
   echo "mkdir /etc/vigil"; echo "mkdir /etc/vigil/services"; echo "mkdir /etc/vigil/services/console"
   echo "write $WORK/svc-run /etc/vigil/services/console/run"
   echo "write $WORK/svc-policy /etc/vigil/services/console/policy"
