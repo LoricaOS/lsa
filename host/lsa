@@ -22,7 +22,9 @@ set -eu
 
 LSA_VERSION=0.1.0
 LSA_HOME="${LSA_HOME:-$HOME/.lsa}"
+HERE="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 FC="${LSA_FIRECRACKER:-$LSA_HOME/firecracker}"
+SLIRP="${LSA_SLIRP:-$LSA_HOME/slirp4netns}"        # rootless network uplink
 DISTROS="$LSA_HOME/distros"
 
 die()  { echo "lsa: $*" >&2; exit 1; }
@@ -124,8 +126,12 @@ cmd_boot() {
     [ -r /dev/kvm ] && [ -w /dev/kvm ] || die "/dev/kvm not accessible (add yourself to the 'kvm' group)"
     dir="$(distro_dir "$distro")"
 
-    version=""; mem_mib=512; vcpus=1; boot_args="boot=text"
+    version=""; mem_mib=512; vcpus=1; boot_args="boot=text"; net=1
     [ -f "$dir/distro.conf" ] && . "$dir/distro.conf"
+    [ "${LSA_NET:-1}" = 0 ] && net=0
+    # Networking rides the rootless slirp4netns uplink; degrade quietly if the
+    # helper isn't installed (older setup, or the user removed it).
+    { [ "$net" = 1 ] && [ -x "$SLIRP" ] && [ -x "$HERE/lsa-netns-run" ]; } || net=0
 
     run=0
     if [ $# -gt 0 ]; then
@@ -135,18 +141,31 @@ cmd_boot() {
         boot_args="$boot_args lsa.exec=$enc"
     fi
 
+    # With networking on, the guest sits on slirp's 10.0.2.0/24 (gateway .2,
+    # DNS .3) and Firecracker gets a tap the netns helper bridges to the uplink.
+    netcfg=""
+    if [ "$net" = 1 ]; then
+        boot_args="$boot_args ip=10.0.2.15/24,10.0.2.2"
+        netcfg='"network-interfaces": [ { "iface_id": "net0", "host_dev_name": "fc0", "guest_mac": "02:00:00:00:00:15" } ],'
+    fi
+
     cfg="$(mktemp)"; trap 'rm -f "$cfg"' EXIT
     cat > "$cfg" <<JSON
 {
   "boot-source": { "kernel_image_path": "$dir/kernel.elf", "boot_args": "$boot_args" },
   "drives": [ { "drive_id": "rootfs", "path_on_host": "$dir/rootfs.img",
                 "is_root_device": true, "is_read_only": false } ],
+  $netcfg
   "machine-config": { "vcpu_count": $vcpus, "mem_size_mib": $mem_mib }
 }
 JSON
 
+    # The VMM is launched directly, or (net on) inside the rootless netns helper.
+    if [ "$net" = 1 ]; then set -- "$HERE/lsa-netns-run" "$FC" "$SLIRP" "$cfg"
+    else                    set -- "$FC" --no-api --config-file "$cfg"; fi
+
     if [ "$run" = 0 ]; then
-        exec "$FC" --no-api --config-file "$cfg"          # interactive shell
+        exec "$@"                                          # interactive shell
     fi
 
     # run mode: print only the command's output (between the guest markers) and
@@ -155,7 +174,7 @@ JSON
     # early, or the guest gets SIGPIPE mid-reboot and never exits). A timeout
     # guards against a command that never returns.
     rcf="$(mktemp)"
-    timeout "${LSA_RUN_TIMEOUT:-120}" "$FC" --no-api --config-file "$cfg" 2>/dev/null | awk -v rcf="$rcf" '
+    timeout "${LSA_RUN_TIMEOUT:-120}" "$@" 2>/dev/null | awk -v rcf="$rcf" '
         /__LSA_END__/    { print $2 > rcf; close(rcf); done=1; next }
         done             { next }
         started          { print }

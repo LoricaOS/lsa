@@ -99,6 +99,32 @@ file the **guest itself just created** does not yet round-trip: the reboot-to-ex
 path commits data blocks but not the new inode's on-disk size/mtime (an Aegis
 ext2-writer durability gap, tracked separately).
 
+### Networking (rootless — no root, no sudo, no host changes)
+
+The guest gets internet with **zero privilege**. There is no TAP on the host, no
+NAT rule, no firewall change, nothing to clean up:
+
+```
+$ lsa nettest
+[NETTEST] connecting to 1.1.1.1:80 ... CONNECTED
+HTTP/1.1 301 Moved Permanently
+Server: cloudflare
+```
+
+How: each `lsa` launch runs Firecracker inside a private **user + network
+namespace**. A bridge in that namespace joins Firecracker's tap to a
+[`slirp4netns`](https://github.com/rootless-containers/slirp4netns) userspace
+uplink, so the guest sits directly on slirp's `10.0.2.0/24` (the classic QEMU
+user-mode model — no NAT/forwarding/netfilter). When the VM exits, the namespace
+and everything in it evaporate. `setup.sh` fetches the `slirp4netns` binary
+alongside Firecracker; if it's absent, `lsa` still boots, just without the NIC.
+Disable per-launch with `LSA_NET=0`.
+
+Getting there needed a small Aegis change: virtio-net rode a PCI/MSI-X-only path,
+so it was invisible on the microVM's virtio-**mmio** transport. It now falls
+through to the LAPIC-timer RX poll (already wired for the no-IOAPIC microVM), and
+takes a static address from an `ip=` kernel-cmdline token. All upstream.
+
 ## Roadmap
 
 - [x] `lsa` — boot LoricaOS to an interactive shell
@@ -107,6 +133,7 @@ ext2-writer durability gap, tracked separately).
 - [x] distribution registry + CI-published `loricaos` release artifact
 - [x] lifecycle: fresh VM per call, `stop`, `version`
 - [x] `lsa cp` file interop (copy-in; copy-out of existing files)
+- [x] rootless networking — guest internet via a user-namespace + slirp4netns, no root
+- [ ] guest DNS resolver (nettest/curl by IP work today; hostnames need a resolver in the rootfs)
 - [ ] durable guest writes across reboot-to-exit (ext2-writer fix) — unblocks copy-out of guest-created files
-- [ ] networking passthrough (virtio-net + host TAP/NAT; needs host root)
 - [ ] live shared filesystem, WSL-style `/mnt` (needs a QEMU `microvm` backend — Firecracker has no 9p/virtiofs)

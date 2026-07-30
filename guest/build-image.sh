@@ -57,6 +57,10 @@ APPLETS="$(cat "$CORE/mux/applets")"
 # output markers then reboots to exit; otherwise opens an interactive shell.
 "$MG" -static -O2 -o "$WORK/lsa-entry" "$HERE/lsa-entry.c"
 
+# nettest: a built-in connectivity self-test (TCP GET to 1.1.1.1, no DNS needed)
+# so `lsa nettest` proves the rootless uplink works out of the box.
+"$MG" -static -O2 -o "$WORK/nettest" "$LORICA/user/bin/nettest"/*.c
+
 echo "[img] rootfs.img (ext2)"
 IMG="$WORK/rootfs.img"
 dd if=/dev/zero of="$IMG" bs=1M count=64 status=none
@@ -64,15 +68,17 @@ mke2fs -t ext2 -F -b 4096 -L loricaos "$IMG" >/dev/null 2>&1
 printf '/bin/lsa-entry' > "$WORK/svc-run"
 printf 'respawn'        > "$WORK/svc-policy"
 printf 'service POWER'  > "$WORK/lsa-entry.caps"   # reboot-to-exit for `lsa <cmd>`
+printf 'service NET_SOCKET NET_ADMIN' > "$WORK/nettest.caps"   # net self-test
 printf 'Welcome to LoricaOS %s (LSA)\n' "$VERSION" > "$WORK/motd"
 {
   echo "mkdir /bin"
-  for f in vigil stsh cu lsa-entry; do echo "write $WORK/$f /bin/$f"; echo "set_inode_field /bin/$f mode 0100755"; done
+  for f in vigil stsh cu lsa-entry nettest; do echo "write $WORK/$f /bin/$f"; echo "set_inode_field /bin/$f mode 0100755"; done
   echo "ln /bin/stsh /bin/sh"                       # /bin/sh -> the shell
   for a in $APPLETS "["; do echo "ln /bin/cu /bin/$a"; done
   echo "mkdir /etc"; echo "write $WORK/motd /etc/motd"
   echo "mkdir /etc/aegis"; echo "mkdir /etc/aegis/caps.d"
   echo "write $WORK/lsa-entry.caps /etc/aegis/caps.d/lsa-entry"
+  echo "write $WORK/nettest.caps /etc/aegis/caps.d/nettest"
   echo "mkdir /etc/vigil"; echo "mkdir /etc/vigil/services"; echo "mkdir /etc/vigil/services/console"
   echo "write $WORK/svc-run /etc/vigil/services/console/run"
   echo "write $WORK/svc-policy /etc/vigil/services/console/policy"

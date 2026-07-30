@@ -1,0 +1,48 @@
+#!/bin/bash
+# lsa-netns-run — run Firecracker with rootless networking.
+#
+# Builds a private user+net namespace, bridges Firecracker's tap to a
+# slirp4netns userspace uplink, and execs the VMM inside it. The guest sits
+# directly on slirp's 10.0.2.0/24 (guest .15, gateway .2, DNS .3) — the classic
+# QEMU user-mode model, so no NAT/forwarding/netfilter is needed. Nothing on the
+# host is touched: no TAP on the host side, no firewall rule, no sudo. When the
+# VMM exits, the namespace (and everything in it) evaporates.
+#
+# Usage: lsa-netns-run <firecracker> <slirp4netns> <fc-config.json>
+# stdio is passed straight through to the VMM; its exit code is propagated.
+set -u
+FC="$1"; SLIRP="$2"; CFG="$3"
+
+up="$(mktemp -u)";   mkfifo "$up"      # child -> parent: netns is ready
+go="$(mktemp -u)";   mkfifo "$go"      # parent -> child: tap0 exists, proceed
+sr="$(mktemp -u)";   mkfifo "$sr"      # slirp -> parent: uplink is ready
+cleanup() { rm -f "$up" "$go" "$sr"; [ -n "${slirp:-}" ] && kill "$slirp" 2>/dev/null; }
+trap cleanup EXIT
+
+# Child: owns the new userns+netns. Stand up the bridge + FC's tap, tell the
+# parent, wait for slirp's tap0 to be created, enslave it, then exec the VMM.
+unshare --user --map-root-user --net bash -c '
+  set -e
+  ip link set lo up
+  ip link add br0 type bridge
+  ip tuntap add dev fc0 mode tap
+  ip link set fc0 master br0
+  ip link set fc0 up
+  ip link set br0 up
+  echo r > "'"$up"'"                       # netns ready
+  read -r _ < "'"$go"'"                     # slirp made tap0
+  ip link set tap0 master br0
+  ip link set tap0 up
+  exec "'"$FC"'" --no-api --config-file "'"$CFG"'"
+' &
+child=$!
+
+read -r _ < "$up"                          # wait for the netns to exist
+# slirp runs in the host netns (real uplink). No --configure: the guest carries
+# the 10.0.2.x address itself. --ready-fd fires once the uplink is live.
+"$SLIRP" --disable-host-loopback --ready-fd 3 "$child" tap0 3>"$sr" >/dev/null 2>&1 &
+slirp=$!
+read -r _ < "$sr"                          # wait for slirp to be ready
+echo g > "$go"                             # let the child bridge tap0 + exec FC
+wait "$child"
+exit $?

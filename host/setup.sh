@@ -23,6 +23,21 @@ if [ ! -x "$LSA_HOME/firecracker" ]; then
 fi
 "$LSA_HOME/firecracker" --version | head -1
 
+# ── slirp4netns (rootless network uplink) ────────────────────────────────────
+# Gives the guest internet with no root, no TAP on the host, no firewall rules.
+# Optional: without it `lsa` still boots, just without networking.
+SLIRP_VERSION="${SLIRP_VERSION:-v1.3.1}"
+if [ ! -x "$LSA_HOME/slirp4netns" ] && [ "$ARCH" = x86_64 ]; then
+    echo "[setup] installing slirp4netns $SLIRP_VERSION (rootless networking)"
+    url="https://github.com/rootless-containers/slirp4netns/releases/download/${SLIRP_VERSION}/slirp4netns-${ARCH}"
+    if curl -fsSL "$url" -o "$LSA_HOME/slirp4netns"; then
+        chmod +x "$LSA_HOME/slirp4netns"
+    else
+        echo "[setup] WARNING: slirp4netns download failed — networking will be off"
+        rm -f "$LSA_HOME/slirp4netns"
+    fi
+fi
+
 # ── KVM access ───────────────────────────────────────────────────────────────
 if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
     echo "[setup] WARNING: /dev/kvm not read/writable by you — add yourself to the"
